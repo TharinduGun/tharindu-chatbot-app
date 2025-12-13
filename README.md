@@ -1,10 +1,10 @@
-# RAG Document Processing Pipeline (Phase 1 Complete)
+# Document Processing Pipeline (Phase 3 Complete)
 
-This project implements a robust, RAG-ready backend for processing complex PDF documents. It utilizes a **hierarchical parsing and chunking strategy** to ensure AI models retrieval high-quality context, including text and related images.
+Phase 3 of the project implements a robust, processing pipeline for complex PDF documents. It utilizes a **hierarchical parsing and chunking strategy** to ensure AI models retrieval high-quality context, including text and related images.
 
-## 🚀 Key Features Implemented
+## Key Features Implemented
 
-### 1. High-Fidelity PDF Parsing (`Docling`)
+### 1. PDF Parsing for with text + images (`Docling`)
 We integrated the **Docling** library to move beyond simple text extraction.
 - **Why?** Standard parsers lose structure. Docling allows us to distinguish between headers, paragraphs, lists, tables, and images.
 - **Implementation**: The `DocumentConverter` parses the PDF into a document tree. We verified this by handling both tree-based and iterator-based traversal to ensure robust content extraction across different PDF versions.
@@ -34,15 +34,15 @@ We validated the pipeline through a rigorous testing process:
     *   Chunk integrity (Text matches PDF content).
     *   Image References (Chunks contain correct `image_ids`).
 
-## 📂 Output Structure
+##  Output Structure
 Processed documents are stored in `backend/data/processed/{doc_id}/`:
 - `metadata.json`: The complete structured data for RAG.
 - `images/`: Extracted image files.
 
-## 🛠️ How to Run
+##  How to Run
 1.  **Start Backend**: `uvicorn app.main:app --reload`
 
-## 📦 Module Breakdown
+##  Module Breakdown
 
 ### `app/services/`
 *   **`parser.py`**: The core engine.
@@ -70,3 +70,5 @@ Processed documents are stored in `backend/data/processed/{doc_id}/`:
 
 ### `app/`
 *   **`main.py`**: Application entry point. Configures the FastAPI app and includes routers.
+
+![alt text](<architecture of the document processing.png>)
