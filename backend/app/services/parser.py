@@ -1,6 +1,8 @@
 import logging
 from pathlib import Path
-from docling.document_converter import DocumentConverter
+from docling.document_converter import DocumentConverter, PdfFormatOption
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+
 from app.models.schema import DocumentRecord, SectionNode, ParagraphBlock, ImageAsset
 from app.services import storage, chunker
 from datetime import datetime
@@ -29,13 +31,19 @@ def process_document(doc_id: str, file_path: str):
 
     update_status("Task started. Initializing DocumentConverter...")
     logger.info(f"Starting processing for doc_id: {doc_id} file: {file_path}")
-    
+
     try:
         # 1. Parse with Docling
-        # Configure pipeline to ensure images are extracted (if applicable for specific format options)
-        # For default PDF, Docling does extract common elements.
-        converter = DocumentConverter()
-        update_status("Converter initialized. Starting conversion (this may take time for model download)...")
+        # Configure pipeline to ensure images are extracted
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.generate_picture_images = True
+        
+        converter = DocumentConverter(
+            format_options={
+                "pdf": PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
+        update_status("Converter initialized with image extraction...")
         
         result = converter.convert(file_path)
         doc = result.document
@@ -118,8 +126,20 @@ def process_document(doc_id: str, file_path: str):
                 if hasattr(item, "image") and item.image:
                     img_filename = f"{image_id}.png"
                     img_dir = storage.get_images_dir(doc_id)
-                    item.image.save(img_dir / img_filename)
-                    saved_path = str(img_dir / img_filename)
+                    
+                    img_obj = item.image
+                    # Handle Docling ImageRef wrapper
+                    if hasattr(img_obj, "pil_image"):
+                        img_obj = img_obj.pil_image
+                        
+                    if img_obj and hasattr(img_obj, "save"):
+                        try:
+                            img_obj.save(img_dir / img_filename)
+                            saved_path = str(img_dir / img_filename)
+                        except Exception as e:
+                            update_status(f"Failed to save image {image_id}: {e}")
+                    else:
+                        update_status(f"Image object {type(img_obj)} has no save method. Attrs: {dir(img_obj)}")
                 
                 bbox = [] 
                 if hasattr(item, "prov") and item.prov:
@@ -226,11 +246,18 @@ def process_document(doc_id: str, file_path: str):
             "images": [i.dict() for i in image_assets]
         }
         
+
         storage.save_processed_data(doc_id, data)
+        # 6. Update Registry Status
+        storage.update_registry_status(doc_id, "completed")
+        
         logger.info(f"Processing complete for {doc_id}")
         
     except Exception as e:
         logger.error(f"Error processing document {doc_id}: {e}", exc_info=True)
+        # Update Registry Status
+        storage.update_registry_status(doc_id, "failed")
+        
         # Write error to file for debugging
         error_file = storage.PROCESSED_DIR / doc_id / "error.txt"
         # Ensure dir exists in case it failed early
