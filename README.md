@@ -1,91 +1,111 @@
-# Document Processing Pipeline (Phase 3 Complete)
+# Multimodal RAG Pipeline (Phase 4)
 
-Phase 3 of the project implements a robust, processing pipeline for complex PDF documents. It utilizes a **hierarchical parsing and chunking strategy** to ensure AI models retrieval high-quality context, including text and related images.
+This project implements an advanced **Multimodal Retrieval-Augmented Generation (RAG)** system. Unlike traditional text-only RAG, this pipeline processes, understands, and interlinks both text and images from complex documents (PDFs).
 
-## Key Features Implemented
+## 1. System Architecture & Flow
 
-### 1. PDF Parsing for with text + images (`Docling`)
+The pipeline operates as an automated background workflow triggered immediately after document upload.
 
-We integrated the **Docling** library to move beyond simple text extraction.
+### The Workflow
 
-- **Why?** Standard parsers lose structure. Docling allows us to distinguish between headers, paragraphs, lists, tables, and images.
-- **Implementation**: The `DocumentConverter` parses the PDF into a document tree. We verified this by handling both tree-based and iterator-based traversal to ensure robust content extraction across different PDF versions.
+1. **Ingestion (`POST /upload`)**: User uploads a PDF.
+2. **Structural Parsing (Phase 3)**: The system extracts text hierarchical, sections, and images using `Docling`.
+3. **Multimodal Trigger**: Once parsing is complete, the **Multimodal Pipeline** (`app.services.multimodal`) is automatically triggered for the document.
+4. **Embedding Generation**:
+    * Text chunks are vectorized.
+    * Images are vectorized.
+    * Captions are generated/verified and vectorized.
+5. **Semantic Linking**: The system runs a "Hybrid Matching" algorithm to find the exact text paragraphs that talk about specific images, linking them bi-directionally.
 
-### 2. Hierarchical Structure Extraction
+## 2. AI Models & Rationale
 
-Instead of a "flat" text file, we build a **Section-aware Tree**.
+We selected a specific suite of State-of-the-art (SOTA) models to ensure high performance and efficiency.
 
-- **Logic**: We detect headers to determine nesting levels (e.g., Chapter 1 -> Section 1.1).
-- **Benefit**: This allows us to know exactly which section a piece of text belongs to, preserving semantic context.
+### A. Text Embedding: `BAAI/bge-large-en-v1.5`
 
-### 3. Hierarchical & Context-Aware Chunking
+* **Purpose**: Vectorizing text chunks for retrieval.
+* **Why**: BGE (BAAI General Embedding) is currently the leaderboard leader for massive text retrieval tasks. It handles long contexts better than classic BERT models.
+* **Dimension**: 1024
 
-We implemented a custom strategy to solve the "context loss" problem in RAG.
+### B. Image Embedding: `google/siglip-so400m-patch14-384`
 
-- **Grouping**: First, we aggregate text **by section**. Text from "Section 1" never bleeds into "Section 2".
-- **Splitting**: We use a `RecursiveCharacterTextSplitter` (Target: 500 chars, Overlap: 100 chars) *within* each section.
-- **Result**: Small, precise chunks that remain self-contained within their parent topic.
+* **Purpose**: Vectorizing images and matching them to text.
+* **Why**: **SigLIP (Sigmoid Loss for Language Image Pre-training)** is a modern upgrade to CLIP.
+  * *Better Accuracy*: It understands fine-grained visual details better than standard CLIP.
+  * *Efficiency*: It uses a sigmoid loss function which scales better during pre-training, resulting in a more robust model for the same size.
+* **Dimension**: 1152
 
-### 4. Image-to-Text Metadata Linking
+### C. Image Captioning: `Salesforce/blip-image-captioning-large`
 
-A critical requirement was linking images to their relevant text.
+* **Purpose**: Generating descriptive text for images that lack accessible metadata.
+* **Why**: **BLIP (Bootstrapping Language-Image Pre-training)** is excellent at generating "human-like" descriptions.
+  * We chose the `Large` variant (~1.8GB) as a balance between quality and speed.
+  * *Fallback Logic*: We only run this model if the PDF's internal caption is missing, too short (e.g., "Figure 1"), or generic.
 
-- **Extraction**: Images are extracted and saved as PNG files.
-- **Linking**: When a chunk is created, we identify which "source blocks" (paragraphs) generated it. If those blocks contained image references (e.g., `[IMAGE: ...]`), the Image ID is automatically attached to the text chunk.
-- **Outcome**: When the LLM retrieves a text chunk, it also gets the exact images referenced in that text.
+## 3. The Multimodal Engine (`multimodal.py`)
 
-## 5. Verification & Validation
+The core logic resides in `backend/app/services/multimodal.py`. Here is how it processes a document step-by-step:
 
-We validated the pipeline through a rigorous testing process:
+### Step 1: Image Processing & Captioning
 
-1. **Automated Script (`verify_pipeline.py`)**: A script uploads test PDFs and polls for the result, verifying the presence of sections, blocks, and image files.
-2. **Manual JSON Inspection**: We audited the generated `metadata.json` to confirm:
-    - Hierarchy correctness (Sections properly nested).
-    - Chunk integrity (Text matches PDF content).
-    - Image References (Chunks contain correct `image_ids`).
+The `run()` function iterates through every extracted image:
 
-## Output Structure
+1. **Validation**: Checks if the existing PDF caption is valid (length > 3 words, not generic).
+2. **Generation**: If invalid, it loads the BLIP model (lazy-loading) and generates a new caption (e.g., "a diagram showing the layers of the epidermis").
+3. **Embedding**: It runs the image through **SigLIP** to get a `1152d` vector (`embedding_siglip_image`).
+4. **Caption Embedding**: It also embeds the final caption using SigLIP's Text Encoder (`embedding_siglip_caption`). This is crucial for matching.
 
-Processed documents are stored in `backend/data/processed/{doc_id}/`:
+### Step 2: Text Chunk Processing
 
-- `metadata.json`: The complete structured data for RAG.
-- `images/`: Extracted image files.
+It iterates through all text chunks:
 
-## How to Run
+1. **Contextualization**: It prepends the Section Title to the text content (e.g., "Introduction: The importance of...") to improve retrieval context.
+2. **BGE Embedding**: Generates the primary search vector (`embedding_bge`) (1024d).
+3. **SigLIP Text Embedding**: Generates a secondary vector (`embedding_siglip`) used *exclusively* for matching against images.
 
-1. **Start Backend**: `uvicorn app.main:app --reload`
+### Step 3: Semantic Image-Text Matching (The "Linker")
 
-## Module Breakdown
+This is the most critical logic. We want to answer: *"Which paragraph discusses this image?"*
 
-### `app/services/`
+#### The Algorithm
 
-* **`parser.py`**: The core engine.
-  - Initializes `docling.DocumentConverter`.
-  - Iterates through document items using `doc.iterate_items()` for robustness.
-  - Builds the `SectionNode` tree structure based on headers.
-  - Extracts images and associates them with their paragraph blocks.
-- **`chunker.py`**: Intelligent text splitting.
-  - `create_chunks(sections, blocks)`: Takes the structured data and splits text *per section*.
-  - Calculates overlaps (block spans) to map generated chunks back to their source `ParagraphBlock`s and linked `ImageAssets`.
-- **`storage.py`**: File system abstraction.
-  - Manages `data/raw` (original PDF uploads) and `data/processed` (JSON + Images).
-  - Ensures directories exist and handles safe file naming.
+For each image, we look for the best matching text chunk:
 
-### `app/routers/`
+1. **Candidate Filtering (Metadata-First)**:
+    * To save time and avoid false positives, we only look at chunks on the **Same Page** or in the **Same Section** as the image.
+    * *Fallback*: If none are found, we expand the search window to +/- 1 page.
 
-* **`documents.py`**: API Endpoints.
-  - `POST /upload`: Validates PDF input, saves the file, and spawns the background processing task.
-  - Uses FastAPI `BackgroundTasks` to ensure the API responds immediately while Docling runs asynchronously.
+2. **Hybrid Verification**: we compute a similarity score:
 
-### `app/models/`
+    ```python
+    Score = (0.7 * Image_Vector • Text_Vector) + (0.3 * Caption_Vector • Text_Vector)
+    ```
 
-* **`schema.py`**: Data contracts (Pydantic).
-  - `SectionNode`: Recursive model for the document tree.
-  - `FineChunk`: The final unit for RAG, containing `content`, `section_id`, and `image_ids`.
-  - `ImageAsset`: Metadata for extracted images.
+    * **Logic**: We trust the raw image content (SigLIP) the most (70%), but we boost the score (30%) if the text also semantically matches the caption we generated.
 
-### `app/`
+3. **Thresholding**:
+    * If the `Score > 0.25`: We confirm the match.
+    * **Action**: We save the `linked_chunk_id` in the image metadata and add the `image_id` to the text chunk's `linked_image_ids` list.
 
-* **`main.py`**: Application entry point. Configures the FastAPI app and includes routers.
+## 4. Outputs
 
-![alt text](<architecture of the document processing.png>)
+For every processed document in `backend/data/processed/{doc_id}/`:
+
+1. **`metadata.json`**:
+    * The "Machine Readable" Source of Truth.
+    * Contains the full Tree Structure, all Text Chunks, and all Embeddings (Dimensions: 1024 & 1152).
+2. **`multimodal_summary.json`**:
+    * A "Human Readable" report for verification.
+    * Shows: Image Caption -> Matched Text Snippet -> Match Score.
+    * Example:
+
+        ```json
+        {
+          "image_id": "...",
+          "caption": "illustration of a tooth cross-section",
+          "matched_text": "The inner pulp of the tooth contains...",
+          "score": 0.85
+        }
+        ```
+
+![alt text](image.png)
