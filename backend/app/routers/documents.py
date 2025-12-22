@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException
-from app.services import storage
+from app.services import storage, multimodal
 from app.services import parser  # We will implement this next
 from app.models.schema import DocumentRecord
 import uuid
@@ -21,29 +21,23 @@ async def upload_document(
         cached_doc = storage.get_cached_document(file_hash)
         
         if cached_doc:
-            # Cache HIT: Return existing record structure
-            # We need to construct a DocumentRecord from the cached info. 
-            # Note: The registry only has basic info. Ideally we would load the full metadata.
-            # But for this return type, we need at least what's in DocumentRecord.
-            # Let's attempt to load the processed metadata to get accurate info like num_pages.
             try:
-                # Reconstruct path to metadata
+                # Cache HIT: Return existing record structure
+                # Trigger Multimodal Pipeline (Phase 4)
+                pipeline = multimodal.MultimodalPipeline()
+                background_tasks.add_task(pipeline.run, cached_doc["doc_id"])
+
                 import json
-                from pathlib import Path
                 meta_path = storage.PROCESSED_DIR / cached_doc["doc_id"] / "metadata.json"
                 if meta_path.exists():
                     with open(meta_path, "r", encoding="utf-8") as f:
                         data = json.load(f)
                         record_data = data.get("record", {})
-                        # Convert string times back to datetime if needed, or rely on pydantic coercion (usually needs obj)
-                        # The Pydantic model expects a datetime object for uploaded_at
                         if "uploaded_at" not in record_data:
-                             record_data["uploaded_at"] = datetime.now() # Fallback
-                        
+                            record_data["uploaded_at"] = datetime.now()
                         return DocumentRecord(**record_data)
-            except Exception:
-                # If loading metadata fails, fall through to re-process or just return basic info?
-                # For safety, if metadata is missing, maybe we should re-process.
+            except Exception as e:
+                print(f"Error loading cached metadata: {e}")
                 pass 
                 
     except Exception as e:
@@ -77,3 +71,18 @@ async def upload_document(
     background_tasks.add_task(parser.process_document, doc_id, file_path)
 
     return doc_record
+
+@router.post("/{doc_id}/process-multimodal")
+async def process_multimodal(doc_id: str, background_tasks: BackgroundTasks):
+    """
+    Triggers Phase 4 Multimodal Embedding Pipeline for an existing document.
+    """
+    # Verify doc exists
+    if not (storage.PROCESSED_DIR / doc_id / "metadata.json").exists():
+        raise HTTPException(status_code=404, detail="Document not found or not processed yet.")
+    
+    # Run in background (it is heavy)
+    pipeline = multimodal.MultimodalPipeline()
+    background_tasks.add_task(pipeline.run, doc_id)
+    
+    return {"message": "Multimodal processing started", "doc_id": doc_id}

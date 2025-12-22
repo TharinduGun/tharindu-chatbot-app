@@ -5,6 +5,10 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions
 
 from app.models.schema import DocumentRecord, SectionNode, ParagraphBlock, ImageAsset
 from app.services import storage, chunker
+# Import multimodal inside function or here? 
+# To avoid any potential circularity at module level if structure changes later, 
+# but currently safe. Let's import at top.
+from app.services import multimodal
 from datetime import datetime
 import uuid
 
@@ -252,6 +256,13 @@ def process_document(doc_id: str, file_path: str):
         storage.update_registry_status(doc_id, "completed")
         
         logger.info(f"Processing complete for {doc_id}")
+
+        # 7. Trigger Multimodal Pipeline Phase 4
+        update_status("Starting Multimodal Pipeline...")
+        logger.info(f"Triggering multimodal pipeline for {doc_id}")
+        mm_pipeline = multimodal.MultimodalPipeline()
+        mm_pipeline.run(doc_id)
+        update_status("Multimodal Pipeline Completed.")
         
     except Exception as e:
         logger.error(f"Error processing document {doc_id}: {e}", exc_info=True)

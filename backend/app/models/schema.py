@@ -11,6 +11,11 @@ class ImageAsset(BaseModel):
     bbox: Optional[List[float]] = None  # [x, y, width, height] or similar
     caption_raw: Optional[str] = None
     caption_generated: Optional[str] = None
+    caption_source: Optional[str] = None # 'pdf' or 'blip2'
+    embedding_siglip_image: Optional[List[float]] = None
+    embedding_siglip_caption: Optional[List[float]] = None
+    linked_chunk_id: Optional[str] = None
+    match_score: Optional[float] = None
 
 class ParagraphBlock(BaseModel):
     block_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -41,6 +46,9 @@ class FineChunk(BaseModel):
     block_ids: List[str] = []
     content: str
     image_ids: List[str] = []
+    embedding_bge: Optional[List[float]] = None
+    embedding_siglip: Optional[List[float]] = None
+    linked_image_ids: List[str] = []
 
 class DocumentRecord(BaseModel):
     doc_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
