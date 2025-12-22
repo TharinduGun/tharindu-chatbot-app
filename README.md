@@ -1,6 +1,6 @@
-# Multimodal RAG Pipeline (Phase 4)
+# Multimodal Embedding Pipeline (Phase 4)
 
-This project implements an advanced **Multimodal Retrieval-Augmented Generation (RAG)** system. Unlike traditional text-only RAG, this pipeline processes, understands, and interlinks both text and images from complex documents (PDFs).
+This project implements an advanced **Multimodal embedding processing system. Unlike traditional text-only RAG, this pipeline processes, understands, and interlinks both text and images from complex documents (PDFs).
 
 ## 1. System Architecture & Flow
 
