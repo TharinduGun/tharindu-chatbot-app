@@ -27,3 +27,7 @@ Switch to the specific feature branch to view the implementation code and detail
 # To view Phase 3 work
 git checkout feature/phase3-document-processing
 ```
+```bash
+# To view Phase 4 work
+git checkout feature/phase4-multimodel-embeddings
+```
