@@ -1,91 +1,66 @@
-# Document Processing Pipeline (Phase 3 Complete)
+# Testing Strategy & Quality Assurance
 
-Phase 3 of the project implements a robust, processing pipeline for complex PDF documents. It utilizes a **hierarchical parsing and chunking strategy** to ensure AI models retrieval high-quality context, including text and related images.
+This document outlines the testing framework implemented for the Document Processing Pipeline. The focus is on verifying the core logic of parsing, chunking, and storage through isolated unit tests.
 
-## Key Features Implemented
+## 1. Implemented Unit Tests
 
-### 1. PDF Parsing for with text + images (`Docling`)
+We have established a suite of unit tests located in `backend/tests/` to ensure reliability and robustness.
 
-We integrated the **Docling** library to move beyond simple text extraction.
+### A. Parser Service (`test_parser.py`)
 
-- **Why?** Standard parsers lose structure. Docling allows us to distinguish between headers, paragraphs, lists, tables, and images.
-- **Implementation**: The `DocumentConverter` parses the PDF into a document tree. We verified this by handling both tree-based and iterator-based traversal to ensure robust content extraction across different PDF versions.
+**Goal**: Verify the orchestration of the document processing pipeline.
 
-### 2. Hierarchical Structure Extraction
+- **`test_process_document_success`**: Mocks `Docling`, `Chunker`, and `Storage` to verify that a document flows correctly from parsing to chunking to saving. Checks that metadata is structured correctly and the status is updated to "completed".
+- **`test_process_document_failure`**: Simulates a crash in the conversion process to ensure the exception is caught and the document status is updated to "failed".
 
-Instead of a "flat" text file, we build a **Section-aware Tree**.
+### B. Chunker Service (`test_chunker.py`)
 
-- **Logic**: We detect headers to determine nesting levels (e.g., Chapter 1 -> Section 1.1).
-- **Benefit**: This allows us to know exactly which section a piece of text belongs to, preserving semantic context.
+**Goal**: Validate the logic for splitting text and preserving context.
 
-### 3. Hierarchical & Context-Aware Chunking
+- **`test_create_chunks_basic`**: Ensures that text is correctly split based on the `RecursiveCharacterTextSplitter` rules and that chunks are assigned the correct `section_id`.
+- **`test_create_chunks_image_linking`**: critical verification that `image_ids` found in paragraph blocks are correctly propagated to the resulting fine-grained text chunks.
 
-We implemented a custom strategy to solve the "context loss" problem in RAG.
+### C. Storage Service (`test_storage.py`)
 
-- **Grouping**: First, we aggregate text **by section**. Text from "Section 1" never bleeds into "Section 2".
-- **Splitting**: We use a `RecursiveCharacterTextSplitter` (Target: 500 chars, Overlap: 100 chars) *within* each section.
-- **Result**: Small, precise chunks that remain self-contained within their parent topic.
+**Goal**: Ensure file system interactions and registry management are safe and correct.
 
-### 4. Image-to-Text Metadata Linking
+- **`test_calculate_content_hash`**: Verifies SHA-256 hash generation for duplicate detection.
+- **`test_save_upload_file`**: Checks that uploaded files are saved to the correct `raw` directory.
+- **`test_registry_operations`**: Validates the JSON registry logic, including adding new entries, updating status (e.g., specific processing states), and retrieving cached document metadata.
 
-A critical requirement was linking images to their relevant text.
+## 2. How to Run Tests
 
-- **Extraction**: Images are extracted and saved as PNG files.
-- **Linking**: When a chunk is created, we identify which "source blocks" (paragraphs) generated it. If those blocks contained image references (e.g., `[IMAGE: ...]`), the Image ID is automatically attached to the text chunk.
-- **Outcome**: When the LLM retrieves a text chunk, it also gets the exact images referenced in that text.
+The project uses `pytest` for testing.
 
-## 5. Verification & Validation
+1. Navigate to the `backend` directory:
 
-We validated the pipeline through a rigorous testing process:
+   ```bash
+   cd backend
+   ```
 
-1. **Automated Script (`verify_pipeline.py`)**: A script uploads test PDFs and polls for the result, verifying the presence of sections, blocks, and image files.
-2. **Manual JSON Inspection**: We audited the generated `metadata.json` to confirm:
-    - Hierarchy correctness (Sections properly nested).
-    - Chunk integrity (Text matches PDF content).
-    - Image References (Chunks contain correct `image_ids`).
+2. Activate your virtual environment (if not already active).
+3. Run the tests:
 
-## Output Structure
+   ```bash
+   pytest
+   ```
 
-Processed documents are stored in `backend/data/processed/{doc_id}/`:
+## 3. Expected & Future Tests
 
-- `metadata.json`: The complete structured data for RAG.
-- `images/`: Extracted image files.
+To further harden the system, the following tests are planned:
 
-## How to Run
+### Integration Tests
 
-1. **Start Backend**: `uvicorn app.main:app --reload`
+- **End-to-End Pipeline**: Run the full pipeline with a real PDF sample (not mocked) to verify compatibility between `Docling` output and our internal data structures.
+- **Concurrency**: Verify behavior when multiple documents are processed simultaneously.
 
-## Module Breakdown
+### API Tests
 
-### `app/services/`
+- **`TestClient` Verification**: Use FastAPI's `TestClient` to test endpoints like `POST /upload` and `GET /status`.
+- **Error Handling**: Verify 400/500 responses for invalid inputs or server errors.
 
-* **`parser.py`**: The core engine.
-  - Initializes `docling.DocumentConverter`.
-  - Iterates through document items using `doc.iterate_items()` for robustness.
-  - Builds the `SectionNode` tree structure based on headers.
-  - Extracts images and associates them with their paragraph blocks.
-- **`chunker.py`**: Intelligent text splitting.
-  - `create_chunks(sections, blocks)`: Takes the structured data and splits text *per section*.
-  - Calculates overlaps (block spans) to map generated chunks back to their source `ParagraphBlock`s and linked `ImageAssets`.
-- **`storage.py`**: File system abstraction.
-  - Manages `data/raw` (original PDF uploads) and `data/processed` (JSON + Images).
-  - Ensures directories exist and handles safe file naming.
+### Edge Case Verification
 
-### `app/routers/`
-
-* **`documents.py`**: API Endpoints.
-  - `POST /upload`: Validates PDF input, saves the file, and spawns the background processing task.
-  - Uses FastAPI `BackgroundTasks` to ensure the API responds immediately while Docling runs asynchronously.
-
-### `app/models/`
-
-* **`schema.py`**: Data contracts (Pydantic).
-  - `SectionNode`: Recursive model for the document tree.
-  - `FineChunk`: The final unit for RAG, containing `content`, `section_id`, and `image_ids`.
-  - `ImageAsset`: Metadata for extracted images.
-
-### `app/`
-
-* **`main.py`**: Application entry point. Configures the FastAPI app and includes routers.
-
-![alt text](<architecture of the document processing.png>)
+- **Empty/Malformed PDFs**: Ensure the parser handles zero-byte files or corrupted PDFs gracefully.
+- **Deeply Nested Headers**: Validate hierarchical chunking on documents with complex TOC structures (e.g., Level 5 headers).
+- **Large Images**: Verify extraction performance on high-resolution images.
