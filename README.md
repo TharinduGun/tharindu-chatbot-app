@@ -1,111 +1,51 @@
-# Multimodal RAG Pipeline (Phase 4)
+# Multimodal Module Testing (Phase 4)
 
-This project implements an advanced **Multimodal Retrieval-Augmented Generation (RAG)** system. Unlike traditional text-only RAG, this pipeline processes, understands, and interlinks both text and images from complex documents (PDFs).
+This branch focuses on the unit testing and validation of the Multimodal RAG Pipeline (`backend/app/services/multimodal.py`).
 
-## 1. System Architecture & Flow
+## Testing Strategy: Mocking Heavy Models
 
-The pipeline operates as an automated background workflow triggered immediately after document upload.
+The multimodal pipeline relies on massive state-of-the-art models:
 
-### The Workflow
+1. **SigLIP** (Image & Text Embeddings)
+2. **BGE** (Text Embeddings)
+3. **BLIP** (Image Captioning)
 
-1. **Ingestion (`POST /upload`)**: User uploads a PDF.
-2. **Structural Parsing (Phase 3)**: The system extracts text hierarchical, sections, and images using `Docling`.
-3. **Multimodal Trigger**: Once parsing is complete, the **Multimodal Pipeline** (`app.services.multimodal`) is automatically triggered for the document.
-4. **Embedding Generation**:
-    * Text chunks are vectorized.
-    * Images are vectorized.
-    * Captions are generated/verified and vectorized.
-5. **Semantic Linking**: The system runs a "Hybrid Matching" algorithm to find the exact text paragraphs that talk about specific images, linking them bi-directionally.
+Loading these models requires gigabytes of VRAM and significant time. To ensure our **Unit Tests** are fast, reliable, and runnable in any environment (including CI without GPUs), we employ **extensive mocking**.
 
-## 2. AI Models & Rationale
+We assume the underlying libraries (`transformers`, `torch`) work as expected. Our tests focus on validating the **business logic**, **data flow**, and **orchestration** of these models.
 
-We selected a specific suite of State-of-the-art (SOTA) models to ensure high performance and efficiency.
+## Test Suite: `backend/tests/test_multimodal.py`
 
-### A. Text Embedding: `BAAI/bge-large-en-v1.5`
+We have implemented a comprehensive test suite using `pytest`.
 
-* **Purpose**: Vectorizing text chunks for retrieval.
-* **Why**: BGE (BAAI General Embedding) is currently the leaderboard leader for massive text retrieval tasks. It handles long contexts better than classic BERT models.
-* **Dimension**: 1024
+### Key Test Cases
 
-### B. Image Embedding: `google/siglip-so400m-patch14-384`
+1. **`test_validate_caption`**
+   - **Goal**: Ensure the caption quality filter works.
+   - **Logic**: Rejects captions like "Figure 1" or empty strings. Accepts descriptive text.
 
-* **Purpose**: Vectorizing images and matching them to text.
-* **Why**: **SigLIP (Sigmoid Loss for Language Image Pre-training)** is a modern upgrade to CLIP.
-  * *Better Accuracy*: It understands fine-grained visual details better than standard CLIP.
-  * *Efficiency*: It uses a sigmoid loss function which scales better during pre-training, resulting in a more robust model for the same size.
-* **Dimension**: 1152
+2. **`test_initialization`**
+   - **Goal**: Verify that the `MultimodalPipeline` class initializes correctly (loading mocked processors/models).
 
-### C. Image Captioning: `Salesforce/blip-image-captioning-large`
+3. **`test_get_bge_embedding` & `test_get_siglip_...`**
+   - **Goal**: Validate that input text/images are correctly passed to the models and that the output vectors have the correct dimensions (e.g., 768 for BGE, 1024/1152 for SigLIP).
 
-* **Purpose**: Generating descriptive text for images that lack accessible metadata.
-* **Why**: **BLIP (Bootstrapping Language-Image Pre-training)** is excellent at generating "human-like" descriptions.
-  * We chose the `Large` variant (~1.8GB) as a balance between quality and speed.
-  * *Fallback Logic*: We only run this model if the PDF's internal caption is missing, too short (e.g., "Figure 1"), or generic.
+4. **`test_run_flow` (End-to-End Logic)**
+   - **Goal**: Verify the full processing loop for a single document.
+   - **Scope**:
+     - Mocks the file system (`PROCESSED_DIR`) and storage.
+     - Simulates image and chunk data.
+     - **Verifies Linking Logic**: We inject specific "mock vectors" to force a high similarity score between a specific image and a text chunk. We then assert that the system correctly creates the bi-directional link (`linked_chunk_id` in image, `linked_image_ids` in chunk) and saves the result.
 
-## 3. The Multimodal Engine (`multimodal.py`)
+## How to Run Tests
 
-The core logic resides in `backend/app/services/multimodal.py`. Here is how it processes a document step-by-step:
+Ensure you are in the project root.
 
-### Step 1: Image Processing & Captioning
+```powershell
+$env:PYTHONPATH="backend"; python -m pytest backend/tests/test_multimodal.py
+```
 
-The `run()` function iterates through every extracted image:
+## Validation Results
 
-1. **Validation**: Checks if the existing PDF caption is valid (length > 3 words, not generic).
-2. **Generation**: If invalid, it loads the BLIP model (lazy-loading) and generates a new caption (e.g., "a diagram showing the layers of the epidermis").
-3. **Embedding**: It runs the image through **SigLIP** to get a `1152d` vector (`embedding_siglip_image`).
-4. **Caption Embedding**: It also embeds the final caption using SigLIP's Text Encoder (`embedding_siglip_caption`). This is crucial for matching.
-
-### Step 2: Text Chunk Processing
-
-It iterates through all text chunks:
-
-1. **Contextualization**: It prepends the Section Title to the text content (e.g., "Introduction: The importance of...") to improve retrieval context.
-2. **BGE Embedding**: Generates the primary search vector (`embedding_bge`) (1024d).
-3. **SigLIP Text Embedding**: Generates a secondary vector (`embedding_siglip`) used *exclusively* for matching against images.
-
-### Step 3: Semantic Image-Text Matching (The "Linker")
-
-This is the most critical logic. We want to answer: *"Which paragraph discusses this image?"*
-
-#### The Algorithm
-
-For each image, we look for the best matching text chunk:
-
-1. **Candidate Filtering (Metadata-First)**:
-    * To save time and avoid false positives, we only look at chunks on the **Same Page** or in the **Same Section** as the image.
-    * *Fallback*: If none are found, we expand the search window to +/- 1 page.
-
-2. **Hybrid Verification**: we compute a similarity score:
-
-    ```python
-    Score = (0.7 * Image_Vector • Text_Vector) + (0.3 * Caption_Vector • Text_Vector)
-    ```
-
-    * **Logic**: We trust the raw image content (SigLIP) the most (70%), but we boost the score (30%) if the text also semantically matches the caption we generated.
-
-3. **Thresholding**:
-    * If the `Score > 0.25`: We confirm the match.
-    * **Action**: We save the `linked_chunk_id` in the image metadata and add the `image_id` to the text chunk's `linked_image_ids` list.
-
-## 4. Outputs
-
-For every processed document in `backend/data/processed/{doc_id}/`:
-
-1. **`metadata.json`**:
-    * The "Machine Readable" Source of Truth.
-    * Contains the full Tree Structure, all Text Chunks, and all Embeddings (Dimensions: 1024 & 1152).
-2. **`multimodal_summary.json`**:
-    * A "Human Readable" report for verification.
-    * Shows: Image Caption -> Matched Text Snippet -> Match Score.
-    * Example:
-
-        ```json
-        {
-          "image_id": "...",
-          "caption": "illustration of a tooth cross-section",
-          "matched_text": "The inner pulp of the tooth contains...",
-          "score": 0.85
-        }
-        ```
-
-![alt text](image.png)
+- **Status**: ✅ All Tests Passed
+- **Coverage**: The tests successfully verify that the pipeline handles missing files, generates captions when needed, and correctly executes the hybrid matching algorithm (Image + Caption similarity).
