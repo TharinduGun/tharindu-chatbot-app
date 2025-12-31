@@ -110,9 +110,18 @@ class MultimodalPipeline:
         with open(metadata_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
+        # Initialize Milvus
+        try:
+            from app.services.vector_store import MilvusService
+            milvus_service = MilvusService()
+            milvus_service.connect()
+        except Exception as e:
+            logger.error(f"Failed to initialize Milvus: {e}")
+            milvus_service = None
+
         # 1. Process Images (Captions + Embeddings)
         images = data.get("images", [])
-        images_map = {img["image_id"]: img for img in images}
+        images_to_insert = []
         
         for img in images:
             img_path = img["file_path"]
@@ -139,8 +148,26 @@ class MultimodalPipeline:
             if caption_final:
                 img["embedding_siglip_caption"] = self.get_siglip_text_embedding(caption_final)
 
+            # Prepare for Milvus insertion
+            if img.get("embedding_siglip_image"):
+                images_to_insert.append({
+                    "id": img["image_id"],
+                    "embedding": img["embedding_siglip_image"],
+                    "doc_id": doc_id,
+                    "image_path": img_path,
+                    "caption": caption_final[:2000] # Truncate if too long (milvus limit)
+                })
+
+        # Insert Images to Milvus
+        if milvus_service and images_to_insert:
+            try:
+                milvus_service.insert_images(images_to_insert)
+            except Exception as e:
+                logger.error(f"Failed to insert images to Milvus: {e}")
+
         # 2. Process Text Chunks (BGE Embeddings)
         chunks = data.get("chunks", [])
+        text_chunks_to_insert = []
         
         for chunk in chunks:
             # Contextual embedding: Section Title + Content
@@ -153,6 +180,22 @@ class MultimodalPipeline:
             # Also compute SigLIP text embedding for this chunk to allow image-text matching
             # Note: We match Image (SigLIP) <-> Text (SigLIP). We cannot match Image (SigLIP) <-> Text (BGE).
             chunk["embedding_siglip"] = self.get_siglip_text_embedding(chunk['content'])
+
+            # Prepare for Milvus insertion
+            if chunk.get("embedding_bge"):
+                text_chunks_to_insert.append({
+                    "id": chunk["chunk_id"],
+                    "embedding": chunk["embedding_bge"],
+                    "doc_id": doc_id,
+                    "text": chunk["content"][:60000] # Safety truncate
+                })
+
+        # Insert Text to Milvus
+        if milvus_service and text_chunks_to_insert:
+            try:
+                milvus_service.insert_text(text_chunks_to_insert)
+            except Exception as e:
+                logger.error(f"Failed to insert text to Milvus: {e}")
 
         # 3. Image-Text Matching
         # For each image, find best chunks
