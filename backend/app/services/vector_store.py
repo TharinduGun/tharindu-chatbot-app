@@ -141,7 +141,7 @@ class MilvusService:
             anns_field="embedding",
             param=search_params,
             limit=top_k,
-            output_fields=["text", "doc_id"]
+            output_fields=["text", "doc_id", "metadata"]
         )
         return results
 
@@ -163,6 +163,6 @@ class MilvusService:
             anns_field="embedding",
             param=search_params,
             limit=top_k,
-            output_fields=["image_path", "caption", "doc_id"]
+            output_fields=["image_path", "caption", "doc_id", "metadata"]
         )
         return results
