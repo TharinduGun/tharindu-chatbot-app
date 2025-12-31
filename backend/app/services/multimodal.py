@@ -9,38 +9,50 @@ from transformers import BlipProcessor, BlipForConditionalGeneration, AutoTokeni
 import numpy as np
 from app.services import storage
 
+# Configure logger to write to file as well
+logging.basicConfig(
+    filename='debug_multimodal.log',
+    filemode='a',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 class MultimodalPipeline:
+    # Class-level cache to prevent reloading on every request
+    _siglip_processor = None
+    _siglip_model = None
+    _bge_tokenizer = None
+    _bge_model = None
+    _blip_processor = None
+    _blip_model = None
+
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Using device: {self.device}")
         
-        # Models - Lazy loading or initialized here. 
-        # Since this is a dedicated pipeline step, we'll initialize them here to fail fast if missing.
-        
-        # 1. Image Embeddings: SigLIP
-        logger.info("Loading SigLIP...")
-        self.siglip_processor = SiglipProcessor.from_pretrained("google/siglip-so400m-patch14-384")
-        self.siglip_model = SiglipModel.from_pretrained("google/siglip-so400m-patch14-384").to(self.device)
-        
-        # 2. Text Embeddings: BGE
-        logger.info("Loading BGE...")
-        self.bge_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-large-en-v1.5")
-        self.bge_model = AutoModel.from_pretrained("BAAI/bge-large-en-v1.5").to(self.device)
-        
-        # 3. Captioning: BLIP-2 (Loaded only if needed/fallback)
-        self.blip_processor = None
-        self.blip_model = None
+        # Models are now lazy-loaded on first use via _load_... methods
+
+    def _load_siglip(self):
+        if MultimodalPipeline._siglip_model is None:
+            logger.info("Loading SigLIP...")
+            MultimodalPipeline._siglip_processor = SiglipProcessor.from_pretrained("google/siglip-so400m-patch14-384")
+            MultimodalPipeline._siglip_model = SiglipModel.from_pretrained("google/siglip-so400m-patch14-384").to(self.device)
+    
+    def _load_bge(self):
+        if MultimodalPipeline._bge_model is None:
+            logger.info("Loading BGE...")
+            MultimodalPipeline._bge_tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-large-en-v1.5")
+            MultimodalPipeline._bge_model = AutoModel.from_pretrained("BAAI/bge-large-en-v1.5").to(self.device)
 
     def _load_blip(self):
-        if self.blip_model is None:
+        if MultimodalPipeline._blip_model is None:
             logger.info("Loading BLIP (Large) for caption generation...")
             try:
                 # Switching to BLIP-Large (approx 1.8GB) instead of BLIP-2 (10GB+) to avoid OOM/Hang
-                self.blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-large")
+                MultimodalPipeline._blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-large")
                 
-                self.blip_model = BlipForConditionalGeneration.from_pretrained(
+                MultimodalPipeline._blip_model = BlipForConditionalGeneration.from_pretrained(
                     "Salesforce/blip-image-captioning-large", 
                     torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
                 ).to(self.device)
@@ -49,9 +61,10 @@ class MultimodalPipeline:
                 raise e
 
     def get_bge_embedding(self, text: str) -> List[float]:
-        inputs = self.bge_tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
+        self._load_bge()
+        inputs = MultimodalPipeline._bge_tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=512).to(self.device)
         with torch.no_grad():
-            outputs = self.bge_model(**inputs)
+            outputs = MultimodalPipeline._bge_model(**inputs)
             # CLS pooling for BGE usually, or specific instructions. 
             # BGE uses [CLS] token embedding for classification/similarity tasks usually.
             # Official BGE usage: model_output[0][:, 0]
@@ -61,11 +74,12 @@ class MultimodalPipeline:
         return embeddings[0].cpu().numpy().tolist()
 
     def get_siglip_image_embedding(self, image_path: str) -> List[float]:
+        self._load_siglip()
         try:
             image = Image.open(image_path).convert("RGB")
-            inputs = self.siglip_processor(images=image, return_tensors="pt").to(self.device)
+            inputs = MultimodalPipeline._siglip_processor(images=image, return_tensors="pt").to(self.device)
             with torch.no_grad():
-                image_features = self.siglip_model.get_image_features(**inputs)
+                image_features = MultimodalPipeline._siglip_model.get_image_features(**inputs)
                 image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
             return image_features[0].cpu().numpy().tolist()
         except Exception as e:
@@ -73,9 +87,10 @@ class MultimodalPipeline:
             return []
 
     def get_siglip_text_embedding(self, text: str) -> List[float]:
-        inputs = self.siglip_processor(text=[text], return_tensors="pt", padding="max_length", truncation=True).to(self.device)
+        self._load_siglip()
+        inputs = MultimodalPipeline._siglip_processor(text=[text], return_tensors="pt", padding="max_length", truncation=True).to(self.device)
         with torch.no_grad():
-            text_features = self.siglip_model.get_text_features(**inputs)
+            text_features = MultimodalPipeline._siglip_model.get_text_features(**inputs)
             text_features = text_features / text_features.norm(p=2, dim=-1, keepdim=True)
         return text_features[0].cpu().numpy().tolist()
 
@@ -83,10 +98,10 @@ class MultimodalPipeline:
         self._load_blip()
         try:
             image = Image.open(image_path).convert("RGB")
-            inputs = self.blip_processor(image, return_tensors="pt").to(self.device, torch.float16 if self.device == "cuda" else torch.float32)
+            inputs = MultimodalPipeline._blip_processor(image, return_tensors="pt").to(self.device, torch.float16 if self.device == "cuda" else torch.float32)
             
-            generated_ids = self.blip_model.generate(**inputs, max_new_tokens=40)
-            caption = self.blip_processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
+            generated_ids = MultimodalPipeline._blip_model.generate(**inputs, max_new_tokens=40)
+            caption = MultimodalPipeline._blip_processor.batch_decode(generated_ids, skip_special_tokens=True)[0].strip()
             return caption
         except Exception as e:
             logger.error(f"Error generating caption for {image_path}: {e}")
@@ -125,8 +140,12 @@ class MultimodalPipeline:
         
         for img in images:
             img_path = img["file_path"]
+            print(f"[DEBUG] Checking Image: {img_path}")
+            print(f"[DEBUG] Absolute Path: {os.path.abspath(img_path)}")
+            
             if not os.path.exists(img_path):
                 logger.warning(f"Image file missing: {img_path}")
+                print(f"[DEBUG] MISSING: {img_path}")
                 continue
             
             # Caption Logic
@@ -142,32 +161,19 @@ class MultimodalPipeline:
             img["caption_source"] = caption_source
             
             # Image Embeddings (SigLIP)
-            img["embedding_siglip_image"] = self.get_siglip_image_embedding(img_path)
+            print(f"[DEBUG] Generatng Embedding for {img_path}...")
+            emb = self.get_siglip_image_embedding(img_path)
+            img["embedding_siglip_image"] = emb
+            print(f"[DEBUG] Embedding Size: {len(emb)}")
             
-            # Caption Embedding (SigLIP Text for Matching)
+            # SigLIP embedding for the caption itself (for image-text matching)
             if caption_final:
                 img["embedding_siglip_caption"] = self.get_siglip_text_embedding(caption_final)
-
-            # Prepare for Milvus insertion
-            if img.get("embedding_siglip_image"):
-                images_to_insert.append({
-                    "id": img["image_id"],
-                    "embedding": img["embedding_siglip_image"],
-                    "doc_id": doc_id,
-                    "image_path": img_path,
-                    "caption": caption_final[:2000] # Truncate if too long (milvus limit)
-                })
-
-        # Insert Images to Milvus
-        if milvus_service and images_to_insert:
-            try:
-                milvus_service.insert_images(images_to_insert)
-            except Exception as e:
-                logger.error(f"Failed to insert images to Milvus: {e}")
-
-        # 2. Process Text Chunks (BGE Embeddings)
+            else:
+                img["embedding_siglip_caption"] = []
+            
+        # 2. Process Text Chunks (Embeddings only, insertion later)
         chunks = data.get("chunks", [])
-        text_chunks_to_insert = []
         
         for chunk in chunks:
             # Contextual embedding: Section Title + Content
@@ -178,24 +184,7 @@ class MultimodalPipeline:
             chunk["embedding_bge"] = self.get_bge_embedding(context)
             
             # Also compute SigLIP text embedding for this chunk to allow image-text matching
-            # Note: We match Image (SigLIP) <-> Text (SigLIP). We cannot match Image (SigLIP) <-> Text (BGE).
             chunk["embedding_siglip"] = self.get_siglip_text_embedding(chunk['content'])
-
-            # Prepare for Milvus insertion
-            if chunk.get("embedding_bge"):
-                text_chunks_to_insert.append({
-                    "id": chunk["chunk_id"],
-                    "embedding": chunk["embedding_bge"],
-                    "doc_id": doc_id,
-                    "text": chunk["content"][:60000] # Safety truncate
-                })
-
-        # Insert Text to Milvus
-        if milvus_service and text_chunks_to_insert:
-            try:
-                milvus_service.insert_text(text_chunks_to_insert)
-            except Exception as e:
-                logger.error(f"Failed to insert text to Milvus: {e}")
 
         # 3. Image-Text Matching
         # For each image, find best chunks
@@ -256,6 +245,64 @@ class MultimodalPipeline:
                             c["linked_image_ids"].append(img["image_id"])
                         break
 
+        # -------------------------------------------------------
+        # MILVUS INSERTION (Moved to AFTER Matching)
+        # -------------------------------------------------------
+        if milvus_service:
+            # 1. Insert Images
+            images_to_insert = []
+            for img in images:
+                if img.get("embedding_siglip_image"):
+                    metadata = {}
+                    if "linked_chunk_id" in img:
+                        metadata["linked_chunk_id"] = img["linked_chunk_id"]
+                        metadata["match_score"] = img["match_score"]
+                    
+                    images_to_insert.append({
+                        "id": img["image_id"],
+                        "embedding": img["embedding_siglip_image"],
+                        "doc_id": doc_id,
+                        "image_path": img["file_path"],
+                        "caption": img["caption_final"][:2000],
+                        "metadata": metadata
+                    })
+            if images_to_insert:
+                try:
+                    print(f"============================================================")
+                    print(f"🖼️  Inserting {len(images_to_insert)} images into Milvus...")
+                    milvus_service.insert_images(images_to_insert)
+                    print(f"✅  Successfully inserted images to Milvus.")
+                except Exception as e:
+                    logger.error(f"Failed to insert images to Milvus: {e}")
+                    print(f"❌  Failed to insert images: {e}")
+
+            # 2. Insert Text Chunks
+            text_chunks_to_insert = []
+            for chunk in chunks:
+                if chunk.get("embedding_bge"):
+                    metadata = {}
+                    if "linked_image_ids" in chunk and chunk["linked_image_ids"]:
+                        metadata["linked_image_ids"] = chunk["linked_image_ids"]
+                    
+                    text_chunks_to_insert.append({
+                        "id": chunk["chunk_id"],
+                        "embedding": chunk["embedding_bge"],
+                        "doc_id": doc_id,
+                        "text": chunk["content"][:60000],
+                        "metadata": metadata
+                    })
+            if text_chunks_to_insert:
+                try:
+                    print(f"📄  Inserting {len(text_chunks_to_insert)} text chunks into Milvus...")
+                    milvus_service.insert_text(text_chunks_to_insert)
+                    print(f"✅  Successfully inserted text to Milvus.")
+                except Exception as e:
+                    logger.error(f"Failed to insert text to Milvus: {e}")
+                    print(f"❌  Failed to insert text: {e}")
+            
+            print(f"============================================================")
+        # -------------------------------------------------------
+
         # Save Updated Data
         data["chunks"] = chunks
         data["images"] = images
@@ -291,6 +338,11 @@ class MultimodalPipeline:
 
         storage.save_processed_data(doc_id, data)
         logger.info(f"Multimodal processing complete for {doc_id}")
+        
+        print(f"")
+        print(f"🎉🎉🎉 PIPELINE COMPLETED SUCCESSFULLY for {doc_id} 🎉🎉🎉")
+        print(f"Summary saved to: {storage.PROCESSED_DIR / doc_id / 'multimodal_summary.json'}")
+        print(f"============================================================")
 
 if __name__ == "__main__":
     # Test run

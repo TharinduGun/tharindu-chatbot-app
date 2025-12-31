@@ -40,6 +40,9 @@ def inspect_collection(name, expected_dim):
                 print(f"  Caption: {res['caption'][:100]}...")
             if "image_path" in res:
                 print(f"  Image Path: {res['image_path']}")
+            
+            if "metadata" in res:
+                print(f"  Metadata: {res['metadata']}")
                 
             dim = len(emb)
             print(f"  Embedding Dim: {dim}")

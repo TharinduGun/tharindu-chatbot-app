@@ -39,18 +39,25 @@ class MilvusService:
         if not utility.has_collection(self.image_collection_name):
             self._create_image_collection()
 
+    def drop_collections(self):
+        """Drops collections to allow schema updates."""
+        try:
+            utility.drop_collection(self.text_collection_name)
+            utility.drop_collection(self.image_collection_name)
+            logger.info("Dropped existing collections.")
+        except Exception as e:
+            logger.warning(f"Failed to drop collections: {e}")
+
     def _create_text_collection(self):
         fields = [
             FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, auto_id=False, max_length=100),
             FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=1024),
             FieldSchema(name="doc_id", dtype=DataType.VARCHAR, max_length=100),
-            FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535), # Milvus has limits, but 65k is decent
-            # Metadata as JSON string if needed, or separate fields. 
-            # For simplicity, let's keep it minimal for now.
+            FieldSchema(name="text", dtype=DataType.VARCHAR, max_length=65535), 
+            FieldSchema(name="metadata", dtype=DataType.JSON), # NEW
         ]
         schema = CollectionSchema(fields, "Text chunks from documents")
         collection = Collection(self.text_collection_name, schema)
-        # Create index for faster search
         index_params = {
             "metric_type": "COSINE",
             "index_type": "IVF_FLAT",
@@ -66,6 +73,7 @@ class MilvusService:
             FieldSchema(name="doc_id", dtype=DataType.VARCHAR, max_length=100),
             FieldSchema(name="image_path", dtype=DataType.VARCHAR, max_length=500),
             FieldSchema(name="caption", dtype=DataType.VARCHAR, max_length=2000),
+            FieldSchema(name="metadata", dtype=DataType.JSON), # NEW
         ]
         schema = CollectionSchema(fields, "Image embeddings from documents")
         collection = Collection(self.image_collection_name, schema)
@@ -79,26 +87,26 @@ class MilvusService:
 
     def insert_text(self, data: list[dict]):
         """
-        data: list of dicts with keys: id, embedding, doc_id, text
+        data: list of dicts with keys: id, embedding, doc_id, text, metadata (optional)
         """
         if not data:
             return
         
         collection = Collection(self.text_collection_name)
-        # Transform list of dicts to columnar format for Milvus
-        # Milvus insert expects: [[id1, id2], [emb1, emb2], ...]
+        
         ids = [d["id"] for d in data]
         embeddings = [d["embedding"] for d in data]
         doc_ids = [d["doc_id"] for d in data]
         texts = [d["text"] for d in data]
+        metadatas = [d.get("metadata", {}) for d in data]
 
-        collection.insert([ids, embeddings, doc_ids, texts])
+        collection.insert([ids, embeddings, doc_ids, texts, metadatas])
         collection.flush()
         logger.info(f"Inserted {len(data)} text chunks into Milvus.")
 
     def insert_images(self, data: list[dict]):
         """
-        data: list of dicts with keys: id, embedding, doc_id, image_path, caption
+        data: list of dicts with keys: id, embedding, doc_id, image_path, caption, metadata (optional)
         """
         if not data:
             return
@@ -109,8 +117,9 @@ class MilvusService:
         doc_ids = [d["doc_id"] for d in data]
         paths = [d["image_path"] for d in data]
         captions = [d["caption"] for d in data]
+        metadatas = [d.get("metadata", {}) for d in data]
 
-        collection.insert([ids, embeddings, doc_ids, paths, captions])
+        collection.insert([ids, embeddings, doc_ids, paths, captions, metadatas])
         collection.flush()
         logger.info(f"Inserted {len(data)} image embeddings into Milvus.")
 
