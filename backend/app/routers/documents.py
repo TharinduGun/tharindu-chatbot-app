@@ -4,6 +4,9 @@ from app.services import parser  # We will implement this next
 from app.models.schema import DocumentRecord
 import uuid
 from datetime import datetime
+from typing import List, Dict, Any
+import os
+import json
 
 router = APIRouter()
 
@@ -86,3 +89,44 @@ async def process_multimodal(doc_id: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(pipeline.run, doc_id)
     
     return {"message": "Multimodal processing started", "doc_id": doc_id}
+
+@router.get("/list", response_model=List[Dict[str, Any]])
+async def list_documents():
+    """
+    Lists all processed documents available in the system.
+    """
+    try:
+        processed_dir = storage.PROCESSED_DIR
+        if not processed_dir.exists():
+            return []
+
+        documents = []
+        # Iterate over directories in processed data folder
+        for doc_id in os.listdir(processed_dir):
+            doc_path = processed_dir / doc_id
+            if doc_path.is_dir():
+                # Default info
+                doc_info = {
+                    "id": doc_id,
+                    "name": doc_id 
+                }
+                
+                # Check for metadata to get better name/date
+                meta_path = doc_path / "metadata.json"
+                if meta_path.exists():
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                            # Try to find filename in record or metadata
+                            record = data.get("record", {})
+                            if "filename" in record:
+                                doc_info["name"] = record["filename"]
+                    except:
+                        pass
+                
+                documents.append(doc_info)
+        
+        return documents
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

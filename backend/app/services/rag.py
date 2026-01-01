@@ -143,5 +143,6 @@ class RAGPipeline:
                 "text_count": len(texts),
                 "image_count": len(images)
             },
-            "sources": [t['doc_id'] for t in texts] + [i['doc_id'] for i in images]
+            "sources": [t['doc_id'] for t in texts] + [i['doc_id'] for i in images],
+            "images": images
         }

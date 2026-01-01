@@ -15,6 +15,7 @@ class ChatResponse(BaseModel):
     answer: str
     retrieval_stats: Dict[str, int]
     sources: List[str]
+    images: List[Dict[str, Any]]
 
 @router.post("/query", response_model=ChatResponse)
 async def chat_query(request: ChatRequest):
@@ -34,7 +35,8 @@ async def chat_query(request: ChatRequest):
         return ChatResponse(
             answer=result["answer"],
             retrieval_stats=result["retrieval_stats"],
-            sources=list(set(result["sources"])) # Dedup
+            sources=list(set(result["sources"])), # Dedup
+            images=result.get("images", [])
         )
     except Exception as e:
         logger.error(f"Chat Error: {e}")
