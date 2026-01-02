@@ -1,5 +1,8 @@
 # Tharindu Chatbot App
-
+```bash
+# To view latest updated work visit 
+git checkout feature/phase5-frontend
+```
 
 ## 🌿 Project Structure & Branches
 
@@ -31,3 +34,16 @@ git checkout feature/phase3-document-processing
 # To view Phase 4 work
 git checkout feature/phase4-multimodel-embeddings
 ```
+```bash
+# To view Phase 5 - milvus and dual collection approach work
+git checkout feature/phase5-system-integration
+```
+```bash
+# To view Phase 5 - LLM,RAG & Backend Implementation work
+git checkout feature/phase5-llm-rag
+```
+```bash
+# To view Phase 5 - frontend implmentation
+git checkout feature/phase5-frontend
+```
+
